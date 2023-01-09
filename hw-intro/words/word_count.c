@@ -37,7 +37,14 @@ int init_words(WordCount **wclist) {
      Returns 0 if no errors are encountered
      in the body of this function; 1 otherwise.
   */
-  *wclist = NULL;
+  WordCount *newlist = (WordCount*)malloc(sizeof(WordCount));
+  if(!newlist)
+    return 1;
+  newlist->next = NULL;
+  newlist->word = "sentry";
+  newlist->count = 0;
+
+ *wclist = newlist;
   return 0;
 }
 
@@ -46,14 +53,25 @@ ssize_t len_words(WordCount *wchead) {
      encountered in the body of
      this function.
   */
-    size_t len = 0;
-    return len;
+  size_t len = 0;
+  //no count sentry
+  wchead = wchead->next;
+  while(wchead != NULL){
+    wchead = wchead->next;
+    len++;
+  }
+  return len;
 }
 
 WordCount *find_word(WordCount *wchead, char *word) {
   /* Return count for word, if it exists */
-  WordCount *wc = NULL;
-  return wc;
+  wchead = wchead->next;
+  while(wchead != NULL){
+    if(strcmp(wchead->word, word) == 0)
+      return wchead;
+    wchead = wchead->next;
+  }
+  return NULL;
 }
 
 int add_word(WordCount **wclist, char *word) {
@@ -61,13 +79,28 @@ int add_word(WordCount **wclist, char *word) {
      Otherwise insert with count 1.
      Returns 0 if no errors are encountered in the body of this function; 1 otherwise.
   */
- return 0;
+  if(wclist == NULL || word == NULL)
+    return 1;
+  
+  WordCount* fw = find_word(*wclist, word);
+  if(fw){
+    (fw->count)++;
+  }else{
+    //add newword node after sentry
+    WordCount* newWord = (WordCount*)malloc(sizeof(WordCount));
+    newWord->word = new_string(word);
+    newWord->count = 1;
+    newWord->next = (*wclist)->next;
+    (*wclist)->next = newWord;
+  }
+  return 0;
 }
 
 void fprint_words(WordCount *wchead, FILE *ofile) {
   /* print word counts to a file */
   WordCount *wc;
   for (wc = wchead; wc; wc = wc->next) {
-    fprintf(ofile, "%i\t%s\n", wc->count, wc->word);
+    if(wc->count != 0)
+      fprintf(ofile, "%i\t%s\n", wc->count, wc->word);
   }
 }

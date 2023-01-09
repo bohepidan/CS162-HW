@@ -37,7 +37,7 @@ WordCount *word_counts = NULL;
 
 /* The maximum length of each word in a file */
 #define MAX_WORD_LEN 64
-
+char buff[MAX_WORD_LEN];
 /*
  * 3.1.1 Total Word Count
  *
@@ -46,7 +46,23 @@ WordCount *word_counts = NULL;
  */
 int num_words(FILE* infile) {
   int num_words = 0;
-
+  int ite = 0;
+  char c;
+  while(EOF != (c = fgetc(infile))){
+    if(isalpha(c)){
+      if(ite>=MAX_WORD_LEN)
+        return -1;
+      buff[ite++] = c;
+    }else{
+      if(ite > 0){
+        num_words++;
+        ite = 0;       
+      }
+    }
+  }
+  if(ite > 0)
+    num_words++;
+    
   return num_words;
 }
 
@@ -62,6 +78,28 @@ int num_words(FILE* infile) {
  * and 0 otherwise.
  */
 int count_words(WordCount **wclist, FILE *infile) {
+  char c;
+  int ite = 0;
+  if(wclist == NULL || infile == NULL)
+    return 1;
+  while(EOF != (c = fgetc(infile))){
+    if(isalpha(c)){
+      if(ite >= MAX_WORD_LEN)
+        return 1;
+      buff[ite++] = tolower(c);
+    }
+    else{
+      if(ite>0){
+        buff[ite] = '\0';
+        add_word(wclist, buff);
+        ite = 0;
+      }
+    }
+  }
+  if(ite>0){
+    buff[ite] = '\0';
+    add_word(wclist, buff);
+  }
   return 0;
 }
 
@@ -70,7 +108,7 @@ int count_words(WordCount **wclist, FILE *infile) {
  * Useful function: strcmp().
  */
 static bool wordcount_less(const WordCount *wc1, const WordCount *wc2) {
-  return 0;
+  return strcmp(wc1->word, wc2->word) < 0;
 }
 
 // In trying times, displays a helpful message.
@@ -133,10 +171,26 @@ int main (int argc, char *argv[]) {
   if ((argc - optind) < 1) {
     // No input file specified, instead, read from STDIN instead.
     infile = stdin;
+    total_words += num_words(infile);
   } else {
     // At least one file specified. Useful functions: fopen(), fclose().
     // The first file can be found at argv[optind]. The last file can be
     // found at argv[argc-1].
+    if(count_mode){
+      for(int fileid = optind; fileid<argc; fileid++){
+        infile = fopen(argv[fileid], "r");
+        total_words += num_words(infile);
+        fclose(infile);
+      }
+    }else{
+      for(int fileid = optind; fileid<argc; fileid++){
+        infile = fopen(argv[fileid], "r");
+        if(count_words(&word_counts, infile)){
+          printf("count_words() error\n");
+        }
+        fclose(infile);
+      }
+    }
   }
 
   if (count_mode) {
@@ -146,6 +200,6 @@ int main (int argc, char *argv[]) {
 
     printf("The frequencies of each word are: \n");
     fprint_words(word_counts, stdout);
-}
+  }
   return 0;
 }
