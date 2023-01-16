@@ -1,2 +1,13 @@
-abc def AaA
-bbb zzz aaa
+Programming in C is a very important baseline skill for CS 162. This exercise should make sure you’re comfortable with the basics of the language. In particular, you need to be fluent in working with structs, linked data structures (e.g., lists), pointers, arrays, typedef and such, which CS 61C may have touched only lightly.
+
+You will be writing a program called words. words is a program that counts (1) the total amount of words and (2) the frequency of each word in a file(s). It then prints the results to stdout. Like most UNIX utilities in the real world, your program should read its input from each of the files specified as command line arguments, printing the cumulative word counts. If no file is provided, your program should read from stdin.
+
+In C, header files (suffixed by .h) are how we engineer abstractions. They define the objects, types, methods, and—most importantly—documentation. The corresponding .c file provides the implementation of the abstraction. You should be able to write code with the header file without peeking under the covers at its implementation.
+
+In this case, words/word_count.h provides the definition of the word_count struct, which we will use as a linked list to keep track of a word and its frequency. This has been typedef’d into WordCount. This means that instead of typing out struct word_count, we can use WordCount as shorthand. The header file also gives us a list of functions that are defined in words/word_count.c. Part of this assignment is to write code for these functions in words/word_count.c
+
+We have provided you with a compiled version of sort_words so that you do not need to write the wordcount_sort function. However, you may still need to write your own comparator function (i.e. wordcount_less). The Makefile links this in with your two object files, words.o and word_count.o.
+
+Note that words.o is an ELF formatted binary. As such you will need to use a system which can run ELF executables to test your program (such as the CS 162 VM). Windows and OS X do NOT use ELF and as such should not be used for testing.
+
+For this section, you will be making changes to words/main.c and words/word_count.c. After editing these files, cd into the words directory and run make in the terminal. This will create the words executable. (Remember to run make after making code changes to generate a fresh executable). Use this executable (and your own test cases) to test your program for correctness. The autograder will use a series of test cases to determine your final score for this section.
