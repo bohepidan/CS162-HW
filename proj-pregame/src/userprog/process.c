@@ -25,6 +25,7 @@ static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
+bool c_is_space(char c);
 
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
@@ -69,10 +70,17 @@ pid_t process_execute(const char* file_name) {
   return tid;
 }
 
+bool c_is_space(char c){
+  return (c==' ')||(c=='\n')||(c=='\0');
+}
 /* A thread function that loads a user process and starts it
    running. */
 static void start_process(void* file_name_) {
   char* file_name = (char*)file_name_;
+  int fnlen = strlen(file_name);
+  int firstspace;
+  for(firstspace=0; *(file_name+firstspace)!=' '&&*(file_name+firstspace) != '\0'; firstspace++);
+  *(file_name+firstspace) = '\0';
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
@@ -91,34 +99,63 @@ static void start_process(void* file_name_) {
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
-  }
 
-  /* Initialize interrupt frame and load executable. */
-  if (success) {
-    memset(&if_, 0, sizeof if_);
+    /* Initialize interrupt frame and load executable. */
+    memset (&if_, 0, sizeof if_);
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, &if_.eip, &if_.esp);
-    if_.esp -= 0x14;
+    success = load (file_name, &if_.eip, &if_.esp);
   }
 
-  /* Handle failure with succesful PCB malloc. Must free the PCB */
-  if (!success && pcb_success) {
-    // Avoid race where PCB is freed before t->pcb is set to NULL
-    // If this happens, then an unfortuantely timed timer interrupt
-    // can try to activate the pagedir, but it is now freed memory
-    struct process* pcb_to_free = t->pcb;
-    t->pcb = NULL;
-    free(pcb_to_free);
+  if(success){
+    /* Push strings into stack. */
+    char* stresp = if_.esp;
+    for(int itr = fnlen; itr >=0; itr--){
+      if(c_is_space(file_name[itr])){
+        *(--stresp) = '\0';
+        while(c_is_space(file_name[itr])&&itr >=0)
+          itr--;
+        if(itr < 0) break;
+      }
+      if(!c_is_space(file_name[itr])){
+        *(--stresp) = file_name[itr];
+      }
+    }
+    char* strs = stresp;
+
+    /* Push string ptrs and get args. */
+    int argc = 0;
+    char** argv=NULL;
+    char** sptr_esp = (char**)stresp;
+    *(--sptr_esp) = NULL;
+    for(char* cptr = (char*)if_.esp-1; cptr >=strs; cptr--){
+      if(*(cptr-1) == '\0'){
+        *(--sptr_esp) = cptr;
+        argc++;
+      }
+    }
+    argv = sptr_esp;
+    
+    /* Stack align. */
+    int mask = (int)argv&0xf;
+    int subbyte = mask < 0x8 ? mask + 0x10 - 0x8 : mask - 0x8;
+    void* args = (void*)((int)sptr_esp - subbyte);
+
+    /* Push args and eip(null), set esp. */
+    char*** argvptr = (char***)args-1;
+    int* argcptr = (int*)argvptr-1;
+    *argvptr = argv;
+    *argcptr = argc;
+    void** ret = (void**)argcptr -1;
+    *ret = NULL;
+    if_.esp = (void*)ret;
   }
 
-  /* Clean up. Exit on failure or jump to userspace */
-  palloc_free_page(file_name);
-  if (!success) {
-    sema_up(&temporary);
-    thread_exit();
-  }
+  /* If load failed, quit. */
+  palloc_free_page (file_name);
+  if (!success)
+    thread_exit ();
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -126,8 +163,8 @@ static void start_process(void* file_name_) {
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
-  asm volatile("movl %0, %%esp; jmp intr_exit" : : "g"(&if_) : "memory");
-  NOT_REACHED();
+  asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
+  NOT_REACHED ();
 }
 
 /* Waits for process with PID child_pid to die and returns its exit status.
