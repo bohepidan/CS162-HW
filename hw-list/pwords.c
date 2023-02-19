@@ -74,7 +74,6 @@ int main(int argc, char* argv[]) {
       pthread_join(threads[fid], NULL);
       fclose(infiles[fid]);
     }
-
   }
   /* Output final result of all threads' work. */
   wordcount_sort(&word_counts, less_count);
