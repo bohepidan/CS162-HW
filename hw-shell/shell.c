@@ -16,6 +16,8 @@
 /* Convenience macro to silence compiler warnings about unused function parameters. */
 #define unused __attribute__((unused))
 
+#define pdebug printf("here\n")
+
 /* Whether the shell is connected to an actual terminal or not. */
 bool shell_is_interactive;
 
@@ -28,8 +30,16 @@ struct termios shell_tmodes;
 /* Process group id for the shell */
 pid_t shell_pgid;
 
+/* PATH -- environmental variable */
+char* PATH = "/home/vagrant/.vscode-server/bin/da76f93349a72022ca4670c1b84860304616aaa2/bin/rem\
+ote-cli:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/game\
+s:/snap/bin:/usr/local/go/bin:/home/vagrant/.bin:/home/vagrant/.cargo/bin:/home/vagrant/.fzf/bin\
+:/home/vagrant/.bin:/home/vagrant/.cargo/bin";
+
 int cmd_exit(struct tokens* tokens);
 int cmd_help(struct tokens* tokens);
+int cmd_cd(struct tokens* tokens);
+int cmd_pwd(struct tokens* tokens);
 
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens* tokens);
@@ -44,7 +54,31 @@ typedef struct fun_desc {
 fun_desc_t cmd_table[] = {
     {cmd_help, "?", "show this help menu"},
     {cmd_exit, "exit", "exit the command shell"},
+    {cmd_pwd, "pwd", "print current working directory"},
+    {cmd_cd, "cd", "open a directory"},
 };
+
+/* Changes current working dir to another */
+int cmd_cd(struct tokens* tokens) {
+  int err = chdir(tokens_get_token(tokens, 1));
+  if (err == -1) {
+    fprintf(stderr, "%s\n", strerror(errno));
+    return -1;
+  }
+  return 1;
+}
+
+/* Prints current working dir */
+int cmd_pwd(unused struct tokens* tokens) {
+  static char buf[256];
+  char* cwd = getcwd(buf, sizeof buf);
+  if (cwd == NULL) {
+    fprintf(stderr, "%s\n", strerror(errno));
+    return -1;
+  }
+  fprintf(stdout, "%s\n", cwd);
+  return 1;
+}
 
 /* Prints a helpful description for the given command */
 int cmd_help(unused struct tokens* tokens) {
@@ -87,6 +121,173 @@ void init_shell() {
 
     /* Save the current termios to a variable, so it can be restored later. */
     tcgetattr(shell_terminal, &shell_tmodes);
+
+    /* Signal handle */
+    signal(SIGINT, SIG_IGN);
+    signal(SIGTSTP, SIG_IGN);
+  }
+}
+
+/*Executes a single process, whose args are from start to finish */
+void single_program(struct tokens* tokens, int start, int finish) {
+  /* Redirection */
+  int redir = 0;
+  for (int i = start; i < finish; i++) {
+    if (strcmp(tokens_get_token(tokens, i), ">") == 0) {
+      redir = 1;
+      if (freopen(tokens_get_token(tokens, i + 1), "a", stdout) == NULL) {
+        perror("freopen filed");
+        exit(-1);
+      }
+    }
+    else if (strcmp(tokens_get_token(tokens, i), "<") == 0) {
+      redir = 1;
+      if (freopen(tokens_get_token(tokens, i + 1), "r", stdin) == NULL) {
+        perror("freopen filed");
+        exit(-1);
+      }
+    }
+  }
+
+  /* Init argv[] */
+  char** args = malloc(sizeof(char*) * (finish - start + 1 - 2 * redir));
+  int x = 0;
+  for (int i = start; i < finish; i++) {
+    char* tokeni = tokens_get_token(tokens, i);
+    if (strcmp(tokeni, ">") == 0 || strcmp(tokeni, "<") == 0) {
+      /* Skip 2 words */
+      i++;
+    }
+    else {
+      args[x++] = tokeni;
+    }
+  }
+  args[finish - start - 2 * redir] = NULL;
+
+  /* Execute program */
+  char* exefile = tokens_get_token(tokens, start);
+
+  if (*exefile == '/') {  //Full path
+    execv(exefile, args);
+
+    /* Program arrive here only if execv() failed */
+    perror("execv failed");
+  }
+  else {    //Not a full path, use PATH ev
+    char* strh = PATH;
+    int tokenlen = strlen(exefile);
+    while (true) {
+      /* Open next default path */
+      int i;
+      for (i = 0; *(strh + i) != ':' && *(strh + i) != '\0'; i++);
+      char* pbuf = malloc(sizeof(char) * (i + 1 + tokenlen + 1));
+      strncpy(pbuf, strh, i + 1);
+      pbuf[i] = '/';
+      strcpy(pbuf + i + 1, exefile);
+
+      execv(pbuf, args);
+
+      if (errno != ENOENT)
+        perror("execv failed");
+
+      /* Change strh to next path */
+      if (*(strh + i) == ':')
+        strh = strh + i + 1;
+      else if (*(strh + i) == '\0')
+        break;
+    }
+    fprintf(stderr, "Command '%s' not found\n", exefile);
+  }
+  exit(-1);
+}
+
+//Executes programs
+void exec_programs(struct tokens* tokens) {
+  /* Runs a given program, if valid path */
+  pid_t cpid = fork();
+  if (cpid == 0) {  //child
+    int tokens_len = tokens_get_length(tokens);
+
+    /* Signal handle */
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
+
+    /* Count the no of pipe */
+    int pipenum = 0;
+    for (int i = 0; i < tokens_get_length(tokens); i++) {
+      if (strcmp(tokens_get_token(tokens, i), "|") == 0) {
+        pipenum++;
+      }
+    }
+
+    /* No pipe */
+    if (pipenum == 0){
+      if(tokens_len > 0)
+        single_program(tokens, 0, tokens_len);
+      else 
+        exit(-1);
+    }
+
+    /* One or more pipe*/
+    int idx = 0;
+    int* pipeidx = malloc(sizeof(int) * pipenum);
+    for (int i = 0; i < tokens_get_length(tokens); i++) {
+      if (strcmp(tokens_get_token(tokens, i), "|") == 0) {
+        pipeidx[idx++] = i;
+      }
+    }
+    for (int i = 0; i < pipenum; i++) {
+      int pipefd[2];
+      if (pipe(pipefd) == -1)
+        perror("pipe failed");
+
+      pid_t cpid = fork();
+      if (cpid > 0) {
+        close(pipefd[0]);
+        if (dup2(pipefd[1], STDOUT_FILENO) == -1)
+          perror("dup2 failed");
+        if (i == 0 && pipeidx[i] > 0)
+          single_program(tokens, 0, pipeidx[i]);
+        else if(pipeidx[i-1] + 1 < pipeidx[i])
+          single_program(tokens, pipeidx[i - 1] + 1, pipeidx[i]);
+          
+        if (wait(NULL) == -1)
+          perror("wait failed");
+      }
+      else if (cpid == 0) {
+        close(pipefd[1]);
+        if (-1 == dup2(pipefd[0], STDIN_FILENO))
+          perror("dup2 failed");
+        if (i == pipenum - 1&& pipeidx[i]+1 < tokens_len)
+          single_program(tokens, pipeidx[i] + 1, tokens_len);
+        printf("The program should not arrive here.\n");
+        exit(-1);
+      }
+      else {
+        perror("fork failed");
+      }
+    }
+    printf("The program should not arrive here.\n");
+    exit(-1);
+  }
+  else if (cpid == -1) {
+    perror("fork failed");
+  }
+  else {        //terminal process
+    /* Set child process group id to its pid */
+    if(setpgid(cpid, cpid))
+      perror("setpgid failed");
+    
+    /* Set foreground pgrp to child processes */
+    if(tcsetpgrp(0, cpid))
+      perror("tcset pgrp failed");
+    if (wait(NULL) == -1)
+      perror("wait failed");
+
+    signal(SIGTTOU, SIG_IGN);
+    if(tcsetpgrp(0, getpid()))
+      perror("tcsetpgrp failed");
+    signal(SIGTTOU, SIG_DFL);
   }
 }
 
@@ -109,9 +310,9 @@ int main(unused int argc, unused char* argv[]) {
 
     if (fundex >= 0) {
       cmd_table[fundex].fun(tokens);
-    } else {
-      /* REPLACE this to run commands as programs. */
-      fprintf(stdout, "This shell doesn't know how to run programs.\n");
+    }
+    else {
+      exec_programs(tokens);
     }
 
     if (shell_is_interactive)
