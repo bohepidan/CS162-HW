@@ -1,12 +1,19 @@
+const SEND_BUF_SIZE: usize = 1024;
+
 use std::env;
 
 use crate::args;
 
+use crate::http;
 use crate::http::*;
 use crate::stats::*;
 
 use clap::Parser;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+use tokio::net::TcpListener;
+use tokio::fs::File;
 
 use anyhow::Result;
 
@@ -41,12 +48,92 @@ pub fn main() -> Result<()> {
 
 async fn listen(port: u16) -> Result<()> {
     // Hint: you should call `handle_socket` in this function.
-    todo!("TODO: Part 2")
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind(addr).await?;
+    loop {
+        let (socket, _) = listener.accept().await?;
+        tokio::spawn(handle_socket(socket));
+    }
 }
 
 // Handles a single connection via `socket`.
 async fn handle_socket(mut socket: TcpStream) -> Result<()> {
-    todo!("TODO: Part 3")
+    loop{
+        //Read request from client
+        socket.readable().await?;
+        let req = match parse_request(&mut socket).await {
+            Ok(n) => n,
+            Err(ref e) if e.kind() == http::HttpError => {
+                return Ok(());
+            }
+            _=> {
+                log::warn!("Unexpected error:{}", e);
+                continue
+            }
+        };
+        
+        //And resopnse.
+        match req.method.as_str() {
+            "GET" => ok_or_warn(response_get(&mut socket, req.path).await),
+            _ => continue
+        }
+    }
+}
+
+async fn response_get(socket:&mut TcpStream, _path: String) -> Result<()> {
+    let mut path = String::from(_path);
+    path.insert(0, '.');
+
+    let mut f = match File::open(&path).await {
+        Ok(n) => n,
+        Err(e) => match e.kind() {
+            tokio::io::ErrorKind::NotFound => {
+                //File Not Found
+                ok_or_warn(response_not_found(socket).await);
+                return Ok(());
+            }
+            _ => {
+                log::warn!("Fopen err:{}", e);
+                return Ok(());
+            }
+        }
+    };
+
+    start_response(socket, 200).await?;
+    send_header(socket, "Content-Type", get_mime_type(path.as_str())).await?;
+    send_header(socket, "Content-Length", format!("{}", f.metadata().await?.len()).as_str()).await?;
+    end_headers(socket).await?;
+
+    send_file(socket, &mut f).await?;
+
+    Ok(())
+}
+
+//F is assumed to be opened.
+async fn send_file(socket: &mut TcpStream, f: &mut File) -> Result<()> {
+    let mut buf = [0; SEND_BUF_SIZE];
+    loop {
+        let n = f.read(&mut buf).await?;
+        if n == 0{
+            break;
+        }
+
+        socket.write_all(&buf[..n]).await?;
+    }
+    Ok(())
+}
+
+async fn response_not_found(socket:& mut TcpStream) -> Result<()> {
+    start_response(socket, 404).await?;
+    end_headers(socket).await?;
+    Ok(())
+}
+
+fn ok_or_warn(res: Result<()>){
+    match res {
+        Ok(()) => {}
+        Err(e) => log::warn!("statr_response err:{}", e)
+    }
 }
 
 // You are free (and encouraged) to add other funtions to this file.
