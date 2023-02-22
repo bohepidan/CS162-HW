@@ -61,20 +61,11 @@ async fn handle_socket(mut socket: TcpStream) -> Result<()> {
     loop{
         //Read request from client
         socket.readable().await?;
-        let req = match parse_request(&mut socket).await {
-            Ok(n) => n,
-            Err(ref e) if e.kind() == http::HttpError => {
-                return Ok(());
-            }
-            _=> {
-                log::warn!("Unexpected error:{}", e);
-                continue
-            }
-        };
-        
+        let req = parse_request(&mut socket).await?; 
+
         //And resopnse.
         match req.method.as_str() {
-            "GET" => ok_or_warn(response_get(&mut socket, req.path).await),
+            "GET" => response_get(&mut socket, req.path).await?,
             _ => continue
         }
     }
@@ -84,12 +75,12 @@ async fn response_get(socket:&mut TcpStream, _path: String) -> Result<()> {
     let mut path = String::from(_path);
     path.insert(0, '.');
 
-    let mut f = match File::open(&path).await {
+    let attr = match tokio::fs::metadata(&path).await {
         Ok(n) => n,
         Err(e) => match e.kind() {
             tokio::io::ErrorKind::NotFound => {
                 //File Not Found
-                ok_or_warn(response_not_found(socket).await);
+                response_not_found(socket).await?;
                 return Ok(());
             }
             _ => {
@@ -99,42 +90,103 @@ async fn response_get(socket:&mut TcpStream, _path: String) -> Result<()> {
         }
     };
 
-    start_response(socket, 200).await?;
-    send_header(socket, "Content-Type", get_mime_type(path.as_str())).await?;
-    send_header(socket, "Content-Length", format!("{}", f.metadata().await?.len()).as_str()).await?;
-    end_headers(socket).await?;
+    if attr.is_dir() {
+        let index = format_index(&path);
 
-    send_file(socket, &mut f).await?;
+        match File::open(&index).await {
+            Ok(mut f) => {
+                //There is an index.html file.
+                response_file(socket, &index, &mut f).await?;
+            }
+            Err(ref e) if e.kind() == tokio::io::ErrorKind::NotFound => {
+                //Cant find an index.html file
+                let mut content = String::new();
+                let mut rd = tokio::fs::read_dir(&path).await?;
+
+                content.push_str("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\"\n</head>\n<body>\n");
+
+                content.push_str(&format_href(&format!("{}/../", path), ".."));
+                content.push_str(&format_href(&path, "."));
+
+                while let Some(entry) = rd.next_entry().await? {
+                    content.push_str(&format_href(
+                        entry.path().to_str().unwrap(), 
+                        entry.file_name().to_str().unwrap()));
+                }
+
+                content.push_str("\n</body>\n</html>\n");
+
+                start_response(socket, 200).await?;
+                send_header(socket, "Content-Type", "text/html").await?;
+                send_header(socket, "Content-Length", &content.len().to_string()).await?;
+                end_headers(socket).await?;
+                socket.write_all(&content.as_bytes()).await?;
+            }
+            Err(e) => {
+                    log::warn!("Fopen err:{}", e);
+                    return Ok(());
+            }
+        }
+    }else if attr.is_file() {
+        let mut f = File::open(&path).await?;
+        response_file(socket, &path, &mut f).await?;
+    }else{
+        log::warn!("WTF is attr?{:?}", attr.file_type());
+    }
 
     Ok(())
 }
 
-//F is assumed to be opened.
+async fn response_file(socket: &mut TcpStream, path: &str, f:&mut File) -> Result<()>{
+    start_response(socket, 200).await?;
+    send_header(socket, "Content-Type", get_mime_type(path)).await?;
+    send_header(socket, "Content-Length", format!("{}", f.metadata().await?.len()).as_str()).await?;
+    end_headers(socket).await?;
+
+    send_file(socket, f).await?;
+    Ok(())
+}
+
+//Send the content of F to socket, where F is assumed to be opened.
 async fn send_file(socket: &mut TcpStream, f: &mut File) -> Result<()> {
     let mut buf = [0; SEND_BUF_SIZE];
     loop {
-        let n = f.read(&mut buf).await?;
-        if n == 0{
-            break;
+        let mut start;
+        let mut n;
+        let mut end = 0;
+
+        while{
+            start = end;
+            n = f.read(&mut buf[start..]).await?;
+            end = start + n;
+            n > 0
+        }{
+            if end == SEND_BUF_SIZE {
+                break;
+            }
         }
 
-        socket.write_all(&buf[..n]).await?;
+        socket.write_all(&buf[..end]).await?;
+        if n == 0 {
+            break;
+        }
     }
     Ok(())
 }
 
-async fn response_not_found(socket:& mut TcpStream) -> Result<()> {
+async fn response_not_found(socket:&mut TcpStream) -> Result<()> {
     start_response(socket, 404).await?;
     end_headers(socket).await?;
     Ok(())
 }
-
+/* 
 fn ok_or_warn(res: Result<()>){
     match res {
         Ok(()) => {}
         Err(e) => log::warn!("statr_response err:{}", e)
     }
 }
+*/
 
 // You are free (and encouraged) to add other funtions to this file.
 // You can also create your own modules as you see fit.
